@@ -1,0 +1,50 @@
+# ============================================================================
+#  MyProject - Git ignore rules (Unreal Engine 5.8 project)
+#  Created in Phase 2 of the controlled development setup.
+#  Rule: NEVER ignore Config/, Content/, Scripts/ or *.uproject
+# ============================================================================
+
+# ---- Unreal generated / machine local (never commit) ----------------------
+Binaries/
+DerivedDataCache/
+Intermediate/
+Saved/
+Build/
+
+# ---- IDE / editor ---------------------------------------------------------
+.vs/
+.idea/
+.vscode/
+*.sln
+*.suo
+*.sdf
+*.opensdf
+*.VC.db
+*.VC.opendb
+*.user
+*.userprefs
+*.code-workspace
+
+# ---- Build / debug leftovers ---------------------------------------------
+*.target
+*.pdb
+*.log
+*.tmp
+*.bak
+*.autosave
+
+# ---- Operating system ----------------------------------------------------
+Thumbs.db
+Desktop.ini
+.DS_Store
+$RECYCLE.BIN/
+
+# ============================================================================
+#  Deliberately NOT ignored (kept under version control):
+#    Config/                        -> Default*.ini project settings
+#    Content/                       -> all assets
+#    Content/__ExternalActors__/    -> World Partition external actor data
+#    Content/__ExternalObjects__/   -> World Partition external object data
+#    Scripts/                       -> editor automation scripts
+#    MyProject.uproject             -> project descriptor
+# ============================================================================

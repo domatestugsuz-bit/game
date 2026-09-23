@@ -1,0 +1,25 @@
+# ============================================================================
+#  MyProject - Git attributes (Unreal Engine 5.8 project)
+#  Created in Phase 2 of the controlled development setup.
+#  IMPORTANT: this file must exist BEFORE the first `git add`.
+# ============================================================================
+
+# ---- Unreal binary assets: stored in Git LFS, never text-converted --------
+# `-text` disables Git's end-of-line conversion (the machine has
+# core.autocrlf=true at system level, so this flag is mandatory for assets).
+*.uasset  filter=lfs diff=lfs merge=lfs -text
+*.umap    filter=lfs diff=lfs merge=lfs -text
+*.ubulk   filter=lfs diff=lfs merge=lfs -text
+*.uexp     filter=lfs diff=lfs merge=lfs -text
+
+# ---- Text files: LF inside the repository, CRLF in the working tree ------
+# (matches what the Unreal Editor and Windows tooling write)
+*.ini          text eol=crlf
+*.uproject     text eol=crlf
+*.uplugin      text eol=crlf
+*.py           text eol=lf
+*.ps1          text eol=crlf
+*.json         text eol=lf
+*.md           text eol=lf
+*.gitattributes text eol=lf
+*.gitignore     text eol=lf
