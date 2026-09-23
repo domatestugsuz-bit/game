@@ -16,7 +16,8 @@ public class MyProject : ModuleRules
 		{
 			"MyProject",
 			"MyProject/Interaction",
-			"MyProject/Player"
+			"MyProject/Player",
+			"MyProject/World"
 		});
 
 		PublicDependencyModuleNames.AddRange(new string[]
@@ -26,7 +27,9 @@ public class MyProject : ModuleRules
 			"Engine",
 			"InputCore",
 			"EnhancedInput",   // interaction input action (IA_Interact)
-			"UMG"              // interaction prompt widget
+			"UMG",             // interaction prompt widget
+			"Landscape",       // Phase 4A large-world terrain blockout builder
+			"Foliage"          // needed by LandscapeEdit.h (landscape bulk edit interface)
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[]
@@ -34,5 +37,19 @@ public class MyProject : ModuleRules
 			"Slate",
 			"SlateCore"
 		});
+
+		if (Target.bBuildEditor)
+		{
+			// Phase 4B builds the home property blockout at editor time: the procedural
+			// property meshes are created from mesh descriptions, saved as static mesh
+			// assets and registered with the asset registry so the editor can use them.
+			PrivateDependencyModuleNames.AddRange(new string[]
+			{
+				"MeshDescription",
+				"StaticMeshDescription",
+				"AssetRegistry",
+				"UnrealEd"
+			});
+		}
 	}
 }

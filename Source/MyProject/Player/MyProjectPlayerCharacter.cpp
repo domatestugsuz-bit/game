@@ -14,9 +14,13 @@
 #include "InputActionValue.h"
 #include "Interaction/InteractionComponent.h"
 #include "Interaction/InteractionConfig.h"
+#include "Vehicles/VehicleBase.h"
 
 AMyProjectPlayerCharacter::AMyProjectPlayerCharacter()
 	: EyeHeight(64.0f)
+	, ControlMode(EPlayerControlMode::OnFoot)
+	, bMovementStateSaved(false)
+	, SavedMovementMode(MOVE_Walking)
 {
 	// ---------------- first person movement ----------------
 	bUseControllerRotationPitch = false;
@@ -108,6 +112,17 @@ void AMyProjectPlayerCharacter::OnMove(const FInputActionValue& Value)
 	}
 
 	const FVector2D MovementVector = Value.Get<FVector2D>();
+
+	// While driving, the same WASD input drives the vehicle (X = steer, Y = throttle).
+	if (ControlMode == EPlayerControlMode::Driving)
+	{
+		if (AVehicleBase* Vehicle = CurrentVehicle.Get())
+		{
+			Vehicle->SetDriveInput(MovementVector.Y, MovementVector.X);
+		}
+		return;
+	}
+
 	if (Controller && !MovementVector.IsNearlyZero())
 	{
 		const FRotator YawRotation(0.0f, Controller->GetControlRotation().Yaw, 0.0f);
@@ -133,11 +148,30 @@ void AMyProjectPlayerCharacter::OnLook(const FInputActionValue& Value)
 
 void AMyProjectPlayerCharacter::OnJumpStarted()
 {
+	// Space doubles as the handbrake while driving.
+	if (ControlMode == EPlayerControlMode::Driving)
+	{
+		if (AVehicleBase* Vehicle = CurrentVehicle.Get())
+		{
+			Vehicle->SetHandbrake(true);
+		}
+		return;
+	}
+
 	Jump();
 }
 
 void AMyProjectPlayerCharacter::OnJumpStopped()
 {
+	if (ControlMode == EPlayerControlMode::Driving)
+	{
+		if (AVehicleBase* Vehicle = CurrentVehicle.Get())
+		{
+			Vehicle->SetHandbrake(false);
+		}
+		return;
+	}
+
 	StopJumping();
 }
 
@@ -149,4 +183,112 @@ void AMyProjectPlayerCharacter::OnInteractInput()
 bool AMyProjectPlayerCharacter::Interact()
 {
 	return InteractionComponent ? InteractionComponent->TryInteract() : false;
+}
+
+bool AMyProjectPlayerCharacter::EnterVehicle(AVehicleBase* Vehicle)
+{
+	if (!Vehicle || ControlMode == EPlayerControlMode::Driving)
+	{
+		return false;
+	}
+
+	USceneComponent* Seat = Vehicle->GetDriverSeat();
+	if (!Seat)
+	{
+		return false;
+	}
+
+	// Remember the walking state so it can be restored on exit. A character that has
+	// not been initialised yet (or a spectator pawn) can report MOVE_None: treat that
+	// as "walking" so leaving a vehicle can never freeze the player in place.
+	EMovementMode CurrentMovementMode = MOVE_Walking;
+	if (const UCharacterMovementComponent* Movement = GetCharacterMovement())
+	{
+		const EMovementMode ReportedMode = Movement->MovementMode;
+		CurrentMovementMode = (ReportedMode == MOVE_None) ? MOVE_Walking : ReportedMode;
+	}
+	SavedMovementMode = CurrentMovementMode;
+	bMovementStateSaved = true;
+
+	// The driver is a passenger while seated: no walking, no capsule collision.
+	if (UCharacterMovementComponent* Movement = GetCharacterMovement())
+	{
+		Movement->StopMovementImmediately();
+		Movement->DisableMovement();
+	}
+	if (UCapsuleComponent* Capsule = GetCapsuleComponent())
+	{
+		Capsule->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	}
+
+	// Sit on the seat: the first person camera stays exactly where the seat is.
+	AttachToComponent(Seat, FAttachmentTransformRules::SnapToTargetNotIncludingScale);
+	SetActorRelativeLocation(FVector(0.0f, 0.0f, -EyeHeight));
+	SetActorRelativeRotation(FRotator::ZeroRotator);
+
+	CurrentVehicle = Vehicle;
+	ControlMode = EPlayerControlMode::Driving;
+	Vehicle->SetOccupant(this);
+	Vehicle->StopVehicle();
+
+	// Keep using the same interaction pipeline: it now reports "[E] Araçtan in".
+	if (InteractionComponent)
+	{
+		InteractionComponent->SetForcedInteractable(Vehicle);
+	}
+
+	UE_LOG(LogTemp, Display, TEXT("[Vehicle] %s entered %s"), *GetName(), *Vehicle->GetName());
+	return true;
+}
+
+bool AMyProjectPlayerCharacter::ExitVehicle()
+{
+	AVehicleBase* Vehicle = CurrentVehicle.Get();
+	if (!Vehicle || ControlMode != EPlayerControlMode::Driving)
+	{
+		return false;
+	}
+
+	Vehicle->StopVehicle();
+	Vehicle->SetOccupant(nullptr);
+
+	DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+
+	// Place the player at the vehicle's exit point so it never ends up inside the car.
+	FVector ExitLocation = GetActorLocation() + GetActorForwardVector() * 120.0f;
+	if (USceneComponent* Exit = Vehicle->GetExitPoint())
+	{
+		ExitLocation = Exit->GetComponentLocation();
+		SetActorRotation(Exit->GetComponentRotation());
+	}
+	if (const UCapsuleComponent* Capsule = GetCapsuleComponent())
+	{
+		ExitLocation.Z += Capsule->GetScaledCapsuleHalfHeight() + 2.0f;
+	}
+	SetActorLocation(ExitLocation, false, nullptr, ETeleportType::TeleportPhysics);
+
+	// Restore on-foot movement.
+	if (UCapsuleComponent* Capsule = GetCapsuleComponent())
+	{
+		Capsule->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+	}
+	if (UCharacterMovementComponent* Movement = GetCharacterMovement())
+	{
+		const EMovementMode RestoreMode = bMovementStateSaved
+			? static_cast<EMovementMode>(SavedMovementMode.GetValue())
+			: MOVE_Walking;
+		Movement->SetMovementMode(RestoreMode);
+	}
+	bMovementStateSaved = false;
+
+	CurrentVehicle = nullptr;
+	ControlMode = EPlayerControlMode::OnFoot;
+
+	if (InteractionComponent)
+	{
+		InteractionComponent->SetForcedInteractable(nullptr);
+	}
+
+	UE_LOG(LogTemp, Display, TEXT("[Vehicle] %s left %s"), *GetName(), *Vehicle->GetName());
+	return true;
 }

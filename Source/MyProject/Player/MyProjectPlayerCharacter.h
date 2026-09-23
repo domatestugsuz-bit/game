@@ -14,7 +14,17 @@ class UCameraComponent;
 class UInteractionComponent;
 class UInputAction;
 class UInputMappingContext;
+class AVehicleBase;
 struct FInputActionValue;
+
+/** Minimal control state for the vehicle vertical slice. */
+UENUM(BlueprintType)
+enum class EPlayerControlMode : uint8
+{
+	OnFoot	UMETA(DisplayName = "On Foot"),
+	Driving	UMETA(DisplayName = "Driving")
+};
+
 
 UCLASS(Blueprintable, meta = (DisplayName = "MyProject First Person Character"))
 class MYPROJECT_API AMyProjectPlayerCharacter : public ACharacter
@@ -60,6 +70,21 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Player|Interaction")
 	UInteractionComponent* GetInteractionComponent() const { return InteractionComponent; }
 
+	// ------------------------------------------------------- vehicle (Phase 3B)
+	UFUNCTION(BlueprintPure, Category = "Player|Vehicle")
+	EPlayerControlMode GetControlMode() const { return ControlMode; }
+
+	UFUNCTION(BlueprintPure, Category = "Player|Vehicle")
+	AVehicleBase* GetCurrentVehicle() const { return CurrentVehicle.Get(); }
+
+	/** Boards the given vehicle (called by the vehicle interaction). */
+	UFUNCTION(BlueprintCallable, Category = "Player|Vehicle")
+	bool EnterVehicle(AVehicleBase* Vehicle);
+
+	/** Leaves the current vehicle and returns to on-foot movement. */
+	UFUNCTION(BlueprintCallable, Category = "Player|Vehicle")
+	bool ExitVehicle();
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
@@ -69,4 +94,18 @@ protected:
 	void OnJumpStarted();
 	void OnJumpStopped();
 	void OnInteractInput();
+
+	/** Current control mode: on foot or driving. */
+	UPROPERTY(BlueprintReadOnly, Category = "Player|Vehicle")
+	EPlayerControlMode ControlMode;
+
+	/** Vehicle being driven (weak: the vehicle is owned by the level). */
+	UPROPERTY(Transient, BlueprintReadOnly, Category = "Player|Vehicle")
+	TWeakObjectPtr<AVehicleBase> CurrentVehicle;
+
+	/** Movement state saved while driving, restored on exit. */
+	UPROPERTY(Transient)
+	bool bMovementStateSaved;
+	UPROPERTY(Transient)
+	TEnumAsByte<EMovementMode> SavedMovementMode;
 };

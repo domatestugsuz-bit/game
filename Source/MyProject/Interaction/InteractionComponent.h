@@ -40,6 +40,13 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Interaction")
 	FOnInteractionPerformed OnInteractionPerformed;
 
+	/** Forces the interaction focus onto a specific actor (used while driving). */
+	UFUNCTION(BlueprintCallable, Category = "Interaction")
+	void SetForcedInteractable(AActor* InInteractable);
+
+	UFUNCTION(BlueprintPure, Category = "Interaction")
+	AActor* GetForcedInteractable() const { return ForcedInteractable.Get(); }
+
 	/** Performs the interaction on the currently focused object (bound to the interact input). */
 	UFUNCTION(BlueprintCallable, Category = "Interaction")
 	bool TryInteract();
@@ -72,6 +79,13 @@ private:
 	/** Currently focused interactable, weak so we never keep destroyed actors alive. */
 	UPROPERTY(Transient)
 	TWeakObjectPtr<AActor> FocusedInteractable;
+
+	/**
+	 * Optional forced target: while set the component ignores the camera trace and
+	 * reports this actor instead (used by the vehicle slice for "[E] Araçtan in").
+	 */
+	UPROPERTY(Transient)
+	TWeakObjectPtr<AActor> ForcedInteractable;
 
 	/** Cached prompt text for the current focus. */
 	UPROPERTY(Transient)

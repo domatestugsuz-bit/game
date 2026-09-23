@@ -122,10 +122,30 @@ bool UInteractionComponent::TraceForInteractable(FHitResult& OutHit)
 	return World->LineTraceSingleByChannel(OutHit, Start, End, Channel, Params);
 }
 
+void UInteractionComponent::SetForcedInteractable(AActor* InInteractable)
+{
+	ForcedInteractable = InInteractable;
+	RefreshFocus();
+}
+
 void UInteractionComponent::RefreshFocus()
 {
 	AActor* NewInteractable = nullptr;
 	FText NewPromptText = FText::GetEmpty();
+
+	// A forced target wins over the camera trace (used while driving a vehicle).
+	if (AActor* Forced = ForcedInteractable.Get())
+	{
+		AActor* Interactor = GetOwner();
+		if (Forced->GetClass()->ImplementsInterface(UInteractableInterface::StaticClass())
+			&& IInteractableInterface::Execute_CanInteract(Forced, Interactor))
+		{
+			NewInteractable = Forced;
+			NewPromptText = IInteractableInterface::Execute_GetInteractionText(Forced, Interactor);
+		}
+		SetFocus(NewInteractable, NewPromptText);
+		return;
+	}
 
 	FHitResult Hit;
 	if (TraceForInteractable(Hit))
