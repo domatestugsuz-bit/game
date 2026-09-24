@@ -30,8 +30,14 @@ from datetime import datetime
 import unreal
 
 WORLD_DIR = '/Game/Game/Environment/World'
-MATERIAL_PATH = WORLD_DIR + '/M_Landscape10Layer'
-INSTANCE_PATH = WORLD_DIR + '/MI_Landscape10Layer'
+# The material and its instance are rebuilt IN PLACE (same asset identity). Swapping the
+# landscape material to a brand new asset leaves the landscape components' saved material
+# instances parented to the old one, and a -game (non editor) build then asserts while
+# loading: "SetParentEditorOnly() may only be used to initialize (not change) the parent
+# outside of the editor" (MaterialInstanceConstant.cpp:81, callstack UnrealEditor-Landscape).
+MATERIAL_PATH = WORLD_DIR + '/M_LandscapeBlockout'
+INSTANCE_PATH = WORLD_DIR + '/MI_LandscapeBlockout'
+SUPERSEDED_PATHS = (WORLD_DIR + '/M_Landscape10Layer', WORLD_DIR + '/MI_Landscape10Layer')
 TEX_ROOT = '/Game/Game/Environment/House/Textures'
 PACKS = ('Concrete013', 'Concrete046', 'Grass004', 'Gravel043', 'Ground079S', 'Rock051')
 REPORT_REL = 'Phase6/'
@@ -164,12 +170,19 @@ def sample(material, texture_asset, uv, name, x, y, kind='COLOR'):
 
 
 def build_material():
-    if unreal.EditorAssetLibrary.does_asset_exist(MATERIAL_PATH):
-        unreal.EditorAssetLibrary.delete_asset(MATERIAL_PATH)
-    material = asset_tools().create_asset('M_Landscape10Layer', WORLD_DIR, unreal.Material,
-                                          unreal.MaterialFactoryNew())
+    material = unreal.EditorAssetLibrary.load_asset(MATERIAL_PATH)
+    if material is None:
+        material = asset_tools().create_asset('M_LandscapeBlockout', WORLD_DIR, unreal.Material,
+                                             unreal.MaterialFactoryNew())
     if material is None:
         raise RuntimeError('could not create ' + MATERIAL_PATH)
+    # rebuilt in place: the asset keeps its identity so the landscape keeps referencing it
+    unreal.MaterialEditingLibrary.delete_all_material_expressions(material)
+    material.set_editor_property('two_sided', False)
+    try:
+        material.set_editor_property('blend_mode', unreal.BlendMode.BLEND_OPAQUE)
+    except Exception:
+        pass
 
     world = node(material, unreal.MaterialExpressionWorldPosition, -2600, 0)
     vertex_normal = node(material, unreal.MaterialExpressionVertexNormalWS, -2600, 220)
@@ -268,10 +281,10 @@ def channel(material, source, channel_letter, x, y):
 
 
 def build_instance(material):
-    if unreal.EditorAssetLibrary.does_asset_exist(INSTANCE_PATH):
-        unreal.EditorAssetLibrary.delete_asset(INSTANCE_PATH)
-    instance = asset_tools().create_asset('MI_Landscape10Layer', WORLD_DIR, unreal.MaterialInstanceConstant,
-                                          unreal.MaterialInstanceConstantFactoryNew())
+    instance = unreal.EditorAssetLibrary.load_asset(INSTANCE_PATH)
+    if instance is None:
+        instance = asset_tools().create_asset('MI_LandscapeBlockout', WORLD_DIR, unreal.MaterialInstanceConstant,
+                                              unreal.MaterialInstanceConstantFactoryNew())
     if instance is None:
         raise RuntimeError('could not create ' + INSTANCE_PATH)
     instance.set_editor_property('parent', material)
@@ -327,6 +340,13 @@ def main():
     material = build_material()
     instance = build_instance(material)
     report['assigned'] = assign_to_landscape(instance)
+    # the superseded assets from the first attempt are removed so the project keeps exactly one
+    # landscape material (the landscape now references the rebuilt MI_LandscapeBlockout)
+    removed = []
+    for path in SUPERSEDED_PATHS:
+        if unreal.EditorAssetLibrary.does_asset_exist(path) and unreal.EditorAssetLibrary.delete_asset(path):
+            removed.append(path)
+    report['removed_superseded'] = removed
     try:
         level_subsystem.save_current_level()
         report['level_saved'] = True
