@@ -20,14 +20,17 @@ warnings = []
 CVARS = ['r.DynamicGlobalIlluminationMethod', 'r.ReflectionMethod', 'r.Lumen.HardwareRayTracing',
          'r.Lumen.DiffuseIndirect.Allow', 'r.Lumen.ScreenProbeGather.DownsampleFactor',
          'r.Lumen.TraceMeshSDFs.Allow', 'r.Shadow.Virtual.Enable', 'r.Shadow.Virtual.MaxPhysicalPages',
+         'r.Shadow.Virtual.ResolutionLodBiasDirectional', 'r.Shadow.Virtual.Cache',
+         'r.Shadow.Virtual.Cache.StaticSeparate', 'r.Shadow.DistanceScale', 'r.Shadow.RadiusThreshold',
          'r.Nanite', 'r.Nanite.ProjectEnabled', 'r.Substrate', 'r.RayTracing',
          'r.RayTracing.RayTracingProxies.ProjectEnabled', 'r.VolumetricFog',
-         'r.VolumetricFog.GridPixelSize', 'r.SkyAtmosphere', 'r.GenerateMeshDistanceFields',
-         'r.AllowStaticLighting', 'r.AntiAliasingMethod', 'r.Streaming.PoolSize', 'r.Streaming.MipBias',
-         'foliage.DensityScale', 'grass.DensityScale', 'foliage.LODDistanceScale',
-         'grass.CullDistanceScale', 'r.ViewDistanceScale', 'sg.ShadowQuality',
-         'sg.GlobalIlluminationQuality', 'sg.ReflectionQuality', 'sg.FoliageQuality',
-         'sg.EffectsQuality', 'sg.TextureQuality', 'sg.ViewDistanceQuality']
+         'r.VolumetricFog.GridPixelSize', 'r.VolumetricFog.GridSizeZ', 'r.SkyAtmosphere',
+         'r.SkyAtmosphere.FastSkyLUT', 'r.SupportSkyAtmosphereAffectsHeightFog',
+         'r.GenerateMeshDistanceFields', 'r.AllowStaticLighting', 'r.AntiAliasingMethod',
+         'r.Streaming.PoolSize', 'r.Streaming.MipBias', 'foliage.DensityScale', 'grass.DensityScale',
+         'foliage.LODDistanceScale', 'grass.CullDistanceScale', 'r.ViewDistanceScale',
+         'sg.ShadowQuality', 'sg.GlobalIlluminationQuality', 'sg.ReflectionQuality',
+         'sg.FoliageQuality', 'sg.EffectsQuality', 'sg.TextureQuality', 'sg.ViewDistanceQuality']
 
 
 def log(message):
@@ -99,6 +102,12 @@ checks = {
     'sky_atmosphere_on': cvars.get('r.SkyAtmosphere') == 1.0,
     'static_lighting_off': cvars.get('r.AllowStaticLighting') == 0.0,
     'mesh_distance_fields_on': cvars.get('r.GenerateMeshDistanceFields') == 1.0,
+    'vsm_page_budget_raised': (cvars.get('r.Shadow.Virtual.MaxPhysicalPages') or 0) >= 8192,
+    'vsm_near_field_sharpened': (cvars.get('r.Shadow.Virtual.ResolutionLodBiasDirectional') or 0.0) < 0.0,
+    'vsm_cache_on': cvars.get('r.Shadow.Virtual.Cache') == 1.0,
+    'volumetric_fog_grid_tuned': (cvars.get('r.VolumetricFog.GridPixelSize') or 999) <= 16,
+    'sky_atmosphere_fast_lut': cvars.get('r.SkyAtmosphere.FastSkyLUT') == 1.0,
+    'fog_follows_sky_atmosphere': cvars.get('r.SupportSkyAtmosphereAffectsHeightFog') == 1.0,
     'scalability_ini_present': report['files']['scalability_exists'],
     'four_quality_levels': all('{0}@{1}'.format(group, level) in scalability_sections
                                for group in PROFILE_GROUPS for level in (0, 1, 2, 3)),
