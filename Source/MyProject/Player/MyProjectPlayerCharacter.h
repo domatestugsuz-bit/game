@@ -95,6 +95,20 @@ protected:
 	void OnJumpStopped();
 	void OnInteractInput();
 
+	/** Legacy mouse axis fallback for looking around.
+	 *
+	 * The Enhanced Input look only works when this class' SetupPlayerInputComponent() actually
+	 * runs and the pawn's LookAction is assigned. A Blueprint child can override
+	 * SetupPlayerInputComponent(), and then nothing here is bound at all - which is exactly the
+	 * "I can walk but I cannot turn" symptom. These axes are bound on the PlayerController's own
+	 * input component in BeginPlay, so mouse look survives that case too.
+	 */
+	void OnTurnAxis(float Value);
+	void OnLookUpAxis(float Value);
+
+	/** How many diagnostic look lines are still printed to the log. */
+	int32 LookLogBudget;
+
 	/** Current control mode: on foot or driving. */
 	UPROPERTY(BlueprintReadOnly, Category = "Player|Vehicle")
 	EPlayerControlMode ControlMode;

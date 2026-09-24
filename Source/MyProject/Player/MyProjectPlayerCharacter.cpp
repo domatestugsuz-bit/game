@@ -21,6 +21,7 @@ AMyProjectPlayerCharacter::AMyProjectPlayerCharacter()
 	, ControlMode(EPlayerControlMode::OnFoot)
 	, bMovementStateSaved(false)
 	, SavedMovementMode(MOVE_Walking)
+	, LookLogBudget(40)
 {
 	// ---------------- first person movement ----------------
 	bUseControllerRotationPitch = false;
@@ -84,6 +85,21 @@ void AMyProjectPlayerCharacter::BeginPlay()
 		PlayerController->SetInputMode(FInputModeGameOnly());
 		PlayerController->SetIgnoreLookInput(false);
 		PlayerController->SetIgnoreMoveInput(false);
+
+		// Looking around must never depend on a single binding path: a Blueprint child of this
+		// class that overrides SetupPlayerInputComponent() would silently drop the Enhanced
+		// Input look binding (walking keeps working through IMC_Default, turning does not).
+		// The controller's own input component is bound here, in BeginPlay, so it survives.
+		if (UInputComponent* ControllerInput = PlayerController->InputComponent)
+		{
+			ControllerInput->BindAxis(TEXT("Turn"), this, &AMyProjectPlayerCharacter::OnTurnAxis);
+			ControllerInput->BindAxis(TEXT("LookUp"), this, &AMyProjectPlayerCharacter::OnLookUpAxis);
+			UE_LOG(LogTemp, Display, TEXT("[Input] mouse look axes bound on the controller (Turn/LookUp)"));
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[Input] the player controller has no input component yet"));
+		}
 	}
 }
 
@@ -151,8 +167,41 @@ void AMyProjectPlayerCharacter::OnLook(const FInputActionValue& Value)
 	}
 
 	const FVector2D LookVector = Value.Get<FVector2D>();
+	if (LookLogBudget > 0 && !LookVector.IsNearlyZero())
+	{
+		--LookLogBudget;
+		UE_LOG(LogTemp, Display, TEXT("[Input] IA_Look fired: %.3f %.3f"), LookVector.X, LookVector.Y);
+	}
 	AddControllerYawInput(LookVector.X);
 	AddControllerPitchInput(LookVector.Y);
+}
+
+void AMyProjectPlayerCharacter::OnTurnAxis(float Value)
+{
+	if (Value == 0.0f || ControlMode != EPlayerControlMode::OnFoot)
+	{
+		return;
+	}
+	if (LookLogBudget > 0 && FMath::Abs(Value) > 0.4f)
+	{
+		--LookLogBudget;
+		UE_LOG(LogTemp, Display, TEXT("[Input] Turn axis fired: %.3f"), Value);
+	}
+	AddControllerYawInput(Value);
+}
+
+void AMyProjectPlayerCharacter::OnLookUpAxis(float Value)
+{
+	if (Value == 0.0f || ControlMode != EPlayerControlMode::OnFoot)
+	{
+		return;
+	}
+	if (LookLogBudget > 0 && FMath::Abs(Value) > 0.4f)
+	{
+		--LookLogBudget;
+		UE_LOG(LogTemp, Display, TEXT("[Input] LookUp axis fired: %.3f"), Value);
+	}
+	AddControllerPitchInput(Value);
 }
 
 void AMyProjectPlayerCharacter::OnJumpStarted()
