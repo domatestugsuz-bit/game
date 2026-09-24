@@ -43,6 +43,7 @@ BATCH_FOLDERS = {
     'House_LivingRoom': 'Furniture',
     'House_Props': 'Props',
     'House_Veranda': 'Exterior',
+    'House_Garden': 'Exterior',
     'House_Yard': 'Exterior',
     'House_Shed': 'Exterior',
     'House_Interactables': 'Interactables',
@@ -53,11 +54,51 @@ SUBFOLDERS = ('Architecture', 'Interior', 'Exterior', 'Furniture', 'Kitchen', 'B
 # joined kits that have to stay walkable (door openings, rooms) -> complex as simple
 COLLISION_MESH = ('House_Architecture', 'House_Roof', 'House_Interior', 'House_Lighting',
                   'House_Kitchen', 'House_Bathroom', 'House_Bedrooms', 'House_LivingRoom',
-                  'House_Props', 'House_Veranda', 'House_Yard', 'House_Shed')
-# small separate objects (leaves, windows) -> automatic bounds collision
-COLLISION_BOUNDS = ('House_Windows', 'House_Interactables')
+                  'House_Props', 'House_Veranda', 'House_Yard', 'House_Shed',
+                  # the window kit contains multi window detail meshes (water stains, sill
+                  # drip edges) whose bounding boxes would fill the whole interior, so it
+                  # must use the accurate mesh collision as well
+                  'House_Windows', 'House_Garden')
+# small separate leaves (doors, gates, cabinet doors) -> automatic bounds collision
+COLLISION_BOUNDS = ('House_Interactables',)
 NANITE_MIN_TRIANGLES = 20000
-PLACE_IN_LEVEL = False
+PLACE_IN_LEVEL = True
+LEVEL = '/Game/Game/Environment/Lvl_Rural'
+# Placement solved from the Blender manifest and the measured Phase 4B property:
+#   * the FBX round trip maps Blender (x, y, z) to Unreal local (x, -y, z)
+#   * with yaw 0 the Blender +Y side (main entrance, front garden, veranda door) faces
+#     Unreal -Y, i.e. the open concrete yard and PlayerStart_Home (758, 773): the new
+#     house is entered directly from the yard the player spawns on
+#   * the Blender -Y side (driveway, shed, rear) faces Unreal +Y, behind the house
+#   * Y0 = 783.00 leaves 1.77 m between the production north wall (Y0 + 5.33) and the
+#     existing Phase 4B veranda deck (inner edge y = 790.10) so the alley is walkable
+#     and the production roof edge (Y0 + 5.85 = 788.85) clears the deck by 1.25 m
+HOUSE_X0_M = 760.0
+HOUSE_Y0_M = 783.0
+YAW_DEG = 0.0
+PAD_M = 147.492
+SKIP_PLACEMENT = {
+    'House_Garden': 'the Blender front garden would sit on the existing Phase 4B '
+                    'concrete yard (x 726.75-771.42, y 749.59-782.41)',
+}
+PREFIX = 'P4_Prod_'
+# Interior light profile. Read from the replaced Phase 4B-1 house when it is still in the
+# level; otherwise the documented Phase 4B-1 profile (UPhase4B1HouseBuilder: movable
+# point lights, colour 1.0/0.86/0.68, 650 cm attenuation, shadows off) is used so a
+# re-run keeps the interior lit exactly like the first run.
+DEFAULT_LIGHT_PROFILE = ('radius', 650.0)
+LIGHT_COLOR = (255, 219, 173)   # Phase 4B-1 warm interior colour (1.0 / 0.86 / 0.68)
+LIGHT_INTENSITY = (('Hall', 1600.0), ('Kitchen', 2200.0), ('Living', 2600.0),
+                   ('Player', 1800.0), ('Parents', 1800.0), ('Bath', 1500.0),
+                   ('WC', 1200.0), ('Pantry', 1200.0), ('Store', 1400.0),
+                   ('Entry', 1400.0), ('Veranda', 1400.0))
+
+
+def light_intensity_for(name):
+    for keyword, value in LIGHT_INTENSITY:
+        if keyword in name:
+            return value
+    return 1600.0
 
 report = {
     'phase': 'Phase 4 - production house import',
@@ -300,7 +341,7 @@ for batch_name in sorted(imported.keys()):
         facts['ue_size_cm'] = size
         blender_low = info.get('blender_bounds_min')
         blender_high = info.get('blender_bounds_max')
-        if batch_name in COLLISION_MESH and blender_low and blender_high:
+        if len(info['paths']) == 1 and blender_low and blender_high:
             expect = [to_cm(blender_high[index] - blender_low[index]) for index in range(3)]
             ratio = [round(size[index] / expect[index], 4) if expect[index] > 1.0 else None
                      for index in range(3)]
@@ -381,8 +422,214 @@ for batch_name in sorted(imported.keys()):
         report['batches'].setdefault(batch_name, {})[path] = facts
     log('{0}: post processed {1} mesh(es)'.format(batch_name, len(info['paths'])))
 
+report['placement'] = {'skipped': {}, 'actors': [], 'removed': [], 'lights': [], 'notes': []}
+if not PLACE_IN_LEVEL:
+    log('level placement skipped (PLACE_IN_LEVEL = False)')
+else:
+    world = unreal.EditorLoadingAndSavingUtils.load_map(LEVEL)
+    editor_subsystem = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem)
+    if world is None:
+        world = editor_subsystem.get_editor_world()
+    log('level loaded: {0}'.format(world.get_name() if world else 'None'))
+    actor_subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+    level_actors = list(actor_subsystem.get_all_level_actors())
+    log('level actor count before placement: {0}'.format(len(level_actors)))
+
+    def blender_to_world(bx, by, bz):
+        """Blender metres -> Unreal world metres for the chosen yaw 0 placement."""
+        return (HOUSE_X0_M + bx, HOUSE_Y0_M - by, PAD_M + bz)
+
+    def spawn_static_mesh(asset_path, location_m, yaw_deg, label):
+        location = unreal.Vector(location_m[0] * 100.0, location_m[1] * 100.0,
+                                 location_m[2] * 100.0)
+        actor = actor_subsystem.spawn_actor_from_class(unreal.StaticMeshActor, location,
+                                                       unreal.Rotator(0.0, yaw_deg, 0.0))
+        if actor is None:
+            fail('could not spawn actor for ' + asset_path)
+            return None
+        actor.set_actor_label(label)
+        component = actor.get_editor_property('static_mesh_component')
+        try:
+            component.set_editor_property('mobility', unreal.ComponentMobility.STATIC)
+        except Exception as exc:  # noqa: BLE001
+            warn('{0}: could not set static mobility: {1}'.format(label, exc))
+        mesh = editor_assets.load_asset(asset_path)
+        if mesh is None:
+            fail('{0}: static mesh missing: {1}'.format(label, asset_path))
+        else:
+            component.set_static_mesh(mesh)
+        return actor
+
+    # re-run safety: drop a previous production placement (only our own prefixed actors)
+    for actor in level_actors:
+        label = actor.get_actor_label()
+        if label.startswith(PREFIX):
+            report['placement']['removed'].append({'label': label, 'reason': 'previous run'})
+            actor_subsystem.destroy_actor(actor)
+    level_actors = [actor for actor in level_actors
+                    if not actor.get_actor_label().startswith(PREFIX)]
+
+    # the obsolete Phase 4B-1 procedural house (102 static meshes + 10 interior lights).
+    # The Phase 4B property actors (P4B_Veranda, P4B_Garage, P4B_Shed, P4B_ConcreteYard,
+    # P4B_Driveway, P4B_Grill, P4B_Trees_*), the road, the vehicle, the interaction test
+    # object, the PlayerStart and the landscape are NOT touched.
+    legacy = [actor for actor in level_actors
+              if actor.get_actor_label().startswith('P4B1_')]
+    legacy_profile = None
+    for actor in legacy:
+        if actor.get_class().get_name() == 'PointLight':
+            component = actor.get_editor_property('light_component')
+            legacy_profile = {
+                'intensity': component.get_editor_property('intensity'),
+                'attenuation_radius': component.get_editor_property('attenuation_radius'),
+                'light_color': component.get_editor_property('light_color'),
+                'mobility': component.get_editor_property('mobility'),
+                'cast_shadows': component.get_editor_property('cast_shadows'),
+            }
+            break
+    log('legacy P4B1 actors: {0} (light profile found: {1})'.format(
+        len(legacy), legacy_profile is not None))
+
+    # spawn the production house before anything is removed
+    for batch_name in sorted(BATCH_FOLDERS.keys()):
+        if batch_name in SKIP_PLACEMENT:
+            report['placement']['skipped'][batch_name] = SKIP_PLACEMENT[batch_name]
+            log('{0}: NOT placed - {1}'.format(batch_name, SKIP_PLACEMENT[batch_name]))
+            continue
+        info = imported.get(batch_name)
+        if not info:
+            warn('{0}: nothing to place'.format(batch_name))
+            continue
+        entry = plan.get('batches', {}).get(batch_name, {})
+        if entry.get('joined'):
+            actor = spawn_static_mesh(info['paths'][0], blender_to_world(0.0, 0.0, 0.0),
+                                      YAW_DEG, PREFIX + batch_name)
+            if actor is not None:
+                report['placement']['actors'].append({'label': PREFIX + batch_name,
+                                                      'asset': info['paths'][0]})
+        else:
+            names = entry.get('objects') or []
+            origins = entry.get('origins') or []
+            for index, asset_path in enumerate(info['paths']):
+                name = names[index] if index < len(names) else asset_path.rsplit('/', 1)[-1]
+                origin = origins[index] if index < len(origins) else [0.0, 0.0, 0.0]
+                actor = spawn_static_mesh(asset_path, blender_to_world(*origin), YAW_DEG,
+                                          PREFIX + name)
+                if actor is not None:
+                    report['placement']['actors'].append({'label': PREFIX + name,
+                                                          'asset': asset_path})
+    log('placed {0} production actors'.format(len(report['placement']['actors'])))
+
+    # the obsolete house is removed only now that the production house exists
+    for actor in legacy:
+        report['placement']['removed'].append({'label': actor.get_actor_label(),
+                                               'class': actor.get_class().get_name(),
+                                               'reason': 'obsolete Phase 4B-1 house'})
+        actor_subsystem.destroy_actor(actor)
+    log('removed {0} obsolete P4B1 house actors'.format(len(legacy)))
+
+    # interior / porch lights placed on the production lamp positions. The per room
+    # intensity follows the Phase 4B-1 light spec; radius, colour, shadow and mobility are
+    # taken from the replaced house when it was still present, otherwise from the
+    # documented Phase 4B-1 profile, so a re-run keeps the interior lit identically.
+    if legacy_profile is None:
+        warn('no Phase 4B-1 light found (already replaced): using the documented Phase 4B-1 '
+             'light profile')
+    for entry in sorted(manifest['objects_detail'], key=lambda item: item['name']):
+        name = entry['name']
+        if 'LIGHTING' not in (entry.get('collections') or []):
+            continue
+        is_lamp = (('CeilingLamp' in name and 'Bulb' not in name and 'Glass' not in name)
+                   or name.endswith('PorchLight_Body') or name.endswith('OutdoorLight_Body'))
+        if not is_lamp:
+            continue
+        low = entry['bounds_min']
+        high = entry['bounds_max']
+        position = blender_to_world((low[0] + high[0]) / 2.0, (low[1] + high[1]) / 2.0,
+                                    high[2] - 0.12)
+        actor = actor_subsystem.spawn_actor_from_class(
+            unreal.PointLight,
+            unreal.Vector(position[0] * 100.0, position[1] * 100.0, position[2] * 100.0),
+            unreal.Rotator(0.0, 0.0, 0.0))
+        if actor is None:
+            warn('could not spawn light for ' + name)
+            continue
+        actor.set_actor_label(PREFIX + 'Light_' + name)
+        settings = {
+            'intensity': light_intensity_for(name),
+            'attenuation_radius': 650.0,
+            'cast_shadows': False,
+            'light_color': unreal.Color(LIGHT_COLOR[0], LIGHT_COLOR[1], LIGHT_COLOR[2], 255),
+        }
+        if legacy_profile:
+            for key in ('attenuation_radius', 'cast_shadows', 'light_color'):
+                if legacy_profile.get(key) is not None:
+                    settings[key] = legacy_profile[key]
+        component = actor.get_editor_property('light_component')
+        for key, value in settings.items():
+            try:
+                component.set_editor_property(key, value)
+            except Exception as exc:  # noqa: BLE001
+                warn('{0}: light property {1} failed: {2}'.format(name, key, exc))
+        report['placement']['lights'].append(
+            {'label': PREFIX + 'Light_' + name,
+             'position_m': [round(value, 3) for value in position],
+             'intensity': settings['intensity']})
+    log('placed {0} interior/porch lights'.format(len(report['placement']['lights'])))
+
+    # BP_PlayerHouse: clean composition / organisation anchor for the production house
+    blueprint_library = unreal.BlueprintEditorLibrary
+    house_bp = editor_assets.load_asset(ROOT + '/Blueprints/BP_PlayerHouse')
+    if house_bp is None:
+        factory = unreal.BlueprintFactory()
+        try:
+            factory.set_editor_property('parent_class', unreal.Actor)
+        except Exception as exc:  # noqa: BLE001
+            warn('BlueprintFactory parent_class failed: {0}'.format(exc))
+        house_bp = asset_tools.create_asset('BP_PlayerHouse', ROOT + '/Blueprints',
+                                            unreal.Blueprint, factory)
+        log('created {0}/Blueprints/BP_PlayerHouse'.format(ROOT))
+    if house_bp is None:
+        fail('could not create BP_PlayerHouse')
+    else:
+        try:
+            blueprint_library.compile_blueprint(house_bp)
+        except Exception as exc:  # noqa: BLE001
+            warn('compile BP_PlayerHouse failed: {0}'.format(exc))
+        bp_class = blueprint_library.generated_class(house_bp)
+        anchor = None
+        if bp_class is None:
+            warn('BP_PlayerHouse generated class is None; anchor not spawned')
+        else:
+            anchor = actor_subsystem.spawn_actor_from_class(
+                bp_class,
+                unreal.Vector(HOUSE_X0_M * 100.0, HOUSE_Y0_M * 100.0, PAD_M * 100.0),
+                unreal.Rotator(0.0, YAW_DEG, 0.0))
+        if anchor is not None:
+            anchor.set_actor_label(PREFIX + 'HouseRoot')
+            report['placement']['actors'].append({'label': PREFIX + 'HouseRoot',
+                                                  'asset': ROOT + '/Blueprints/BP_PlayerHouse'})
+        editor_assets.save_loaded_asset(house_bp)
+
+    try:
+        unreal.EditorLoadingAndSavingUtils.save_map(world, LEVEL)
+        report['placement']['level_saved'] = True
+    except Exception as exc:  # noqa: BLE001
+        warn('save_map failed, trying the level subsystem: {0}'.format(exc))
+        try:
+            unreal.get_editor_subsystem(unreal.LevelEditorSubsystem).save_current_level()
+            report['placement']['level_saved'] = True
+        except Exception as inner:  # noqa: BLE001
+            report['placement']['level_saved'] = 'failed: ' + str(inner)[:150]
+            fail('could not save the level: {0}'.format(inner))
+    if report['placement'].get('level_saved') is True:
+        log('level saved: ' + LEVEL)
+
 report['summary'] = summary
 report['result'] = 'FAILED' if report['errors'] else 'OK'
+
+
+
 
 saved_dir = unreal.Paths.convert_relative_path_to_full(unreal.Paths.project_saved_dir())
 out_dir = os.path.join(saved_dir, 'Phase4')
