@@ -439,8 +439,14 @@ FPhase4BTerrainExpansionResult UPhase4BTerrainExpander::ExpandWorldTo4032(UObjec
 
 	// ------------------------------------------------------------------ target grid
 	const int32 QuadsPerComponent = FMath::Max(1, Info->ComponentSizeQuads);
-	const int32 ComponentsPerAxis = FMath::Max(1, TargetWorldSizeM / QuadsPerComponent);
-	const int32 BlocksPerAxis = FMath::Max(1, (PreservedMaxX - PreservedMinX) / QuadsPerComponent);
+	// One component covers QuadsPerComponent * MPerVertex metres, so the component count has
+	// to come from that (the previous code divided the metre target by the quad count, which
+	// is only correct when a quad happens to be exactly one metre).
+	const float MetresPerComponent = QuadsPerComponent * MPerVertex;
+	const int32 ComponentsPerAxis = FMath::Max(1, FMath::RoundToInt(TargetWorldSizeM / MetresPerComponent));
+	const int32 BlocksPerAxis = FMath::Max(1, FMath::RoundToInt(static_cast<float>(PreservedMaxX - PreservedMinX) / QuadsPerComponent));
+	Result.Steps.Add(FString::Printf(TEXT("component metrics: %d quads x %.2f m = %.2f m per component, target %d m"),
+	                                 QuadsPerComponent, MPerVertex, MetresPerComponent, TargetWorldSizeM));
 	const int32 ExtraComponents = FMath::Max(0, ComponentsPerAxis - BlocksPerAxis);
 	const int32 LowerExtra = ExtraComponents / 2;
 	const int32 LowerVertex = PreservedMinX - LowerExtra * QuadsPerComponent;
@@ -523,6 +529,12 @@ FPhase4BTerrainExpansionResult UPhase4BTerrainExpander::ExpandWorldTo4032(UObjec
 		}
 	}
 
+	int32 KeysAlreadyPresent = 0;
+	int32 KeysWithoutProxy = 0;
+	Result.Steps.Add(FString::Printf(
+		TEXT("component index range (%d,%d)-(%d,%d), grid based: %s, proxies: %d, components before: %d"),
+		CompIndexX1, CompIndexY1, CompIndexX2, CompIndexY2, Subsystem->IsGridBased() ? TEXT("yes") : TEXT("no"),
+		Proxies.Num(), Info->XYtoComponentMap.Num()));
 	for (int32 ComponentIndexY = CompIndexY1; ComponentIndexY <= CompIndexY2; ++ComponentIndexY)
 	{
 		for (int32 ComponentIndexX = CompIndexX1; ComponentIndexX <= CompIndexX2; ++ComponentIndexX)
@@ -530,6 +542,7 @@ FPhase4BTerrainExpansionResult UPhase4BTerrainExpander::ExpandWorldTo4032(UObjec
 			const FIntPoint Key(ComponentIndexX, ComponentIndexY);
 			if (Info->XYtoComponentMap.Contains(Key))
 			{
+				++KeysAlreadyPresent;
 				continue;
 			}
 
@@ -537,6 +550,7 @@ FPhase4BTerrainExpansionResult UPhase4BTerrainExpander::ExpandWorldTo4032(UObjec
 			ALandscapeProxy* Proxy = Subsystem->FindOrAddLandscapeProxy(Info, ComponentBase);
 			if (Proxy == nullptr)
 			{
+				++KeysWithoutProxy;
 				continue;
 			}
 
@@ -565,16 +579,67 @@ FPhase4BTerrainExpansionResult UPhase4BTerrainExpander::ExpandWorldTo4032(UObjec
 			++Result.ComponentsCreated;
 		}
 	}
-	Result.Steps.Add(FString::Printf(TEXT("components created: %d"), Result.ComponentsCreated));
+	Result.Steps.Add(FString::Printf(
+		TEXT("components created: %d (%d keys already present, %d keys without a proxy), component map now %d"),
+		Result.ComponentsCreated, KeysAlreadyPresent, KeysWithoutProxy, Info->XYtoComponentMap.Num()));
 
 	// ------------------------------------------------------------------ write the new area
 	// Only the ring outside the original block is written (the original components keep
 	// their own heightmaps); the strips also overlap where they meet, which is harmless.
+	// A strip may only be written where components really exist. Writing height data into a
+	// region the landscape does not cover corrupted the neighbouring rows before (the zeroed
+	// ring that dropped the world edge to raw 0), so coverage is checked explicitly.
+	auto IsStripCovered = [Info, QuadsPerComponent](int32 X1, int32 Y1, int32 X2, int32 Y2)
+	{
+		const int32 FirstComponentX = FMath::FloorToInt(static_cast<float>(X1) / QuadsPerComponent);
+		const int32 FirstComponentY = FMath::FloorToInt(static_cast<float>(Y1) / QuadsPerComponent);
+		// the far edge vertex of a strip belongs to the component that ends there
+		const int32 LastComponentX = FMath::FloorToInt(static_cast<float>(FMath::Max(X1, X2 - 1)) / QuadsPerComponent);
+		const int32 LastComponentY = FMath::FloorToInt(static_cast<float>(FMath::Max(Y1, Y2 - 1)) / QuadsPerComponent);
+		for (int32 ComponentY = FirstComponentY; ComponentY <= LastComponentY; ++ComponentY)
+		{
+			for (int32 ComponentX = FirstComponentX; ComponentX <= LastComponentX; ++ComponentX)
+			{
+				if (!Info->XYtoComponentMap.Contains(FIntPoint(ComponentX, ComponentY)))
+				{
+					return false;
+				}
+			}
+		}
+		return true;
+	};
+
+	// The strips cover everything the landscape really owns outside the preserved block. The
+	// outer ring is included on purpose: the Phase 4A builder created 20 x 20 components but
+	// only sculpted the central 16 x 16 block, so the ring around it was left at raw 0
+	// (-256 m). Writing the outer relief there removes that moat without needing any new
+	// component at all.
+	int32 CoveredMinVertexX = MAX_int32;
+	int32 CoveredMinVertexY = MAX_int32;
+	int32 CoveredMaxVertexX = MIN_int32;
+	int32 CoveredMaxVertexY = MIN_int32;
+	for (const TPair<FIntPoint, ULandscapeComponent*>& Entry : Info->XYtoComponentMap)
+	{
+		if (Entry.Value == nullptr)
+		{
+			continue;
+		}
+		CoveredMinVertexX = FMath::Min(CoveredMinVertexX, Entry.Key.X * QuadsPerComponent);
+		CoveredMinVertexY = FMath::Min(CoveredMinVertexY, Entry.Key.Y * QuadsPerComponent);
+		CoveredMaxVertexX = FMath::Max(CoveredMaxVertexX, (Entry.Key.X + 1) * QuadsPerComponent);
+		CoveredMaxVertexY = FMath::Max(CoveredMaxVertexY, (Entry.Key.Y + 1) * QuadsPerComponent);
+	}
+	Result.Steps.Add(FString::Printf(TEXT("component extent in vertices: (%d,%d)-(%d,%d)"),
+	                                 CoveredMinVertexX, CoveredMinVertexY, CoveredMaxVertexX, CoveredMaxVertexY));
+
 	TArray<FIntRect> Strips;
-	Strips.Add(FIntRect(LowerVertex, LowerVertex, PreservedMinX - 1, UpperVertex));
-	Strips.Add(FIntRect(PreservedMaxX + 1, LowerVertex, UpperVertex, UpperVertex));
-	Strips.Add(FIntRect(PreservedMinX, LowerVertex, PreservedMaxX, PreservedMinY - 1));
-	Strips.Add(FIntRect(PreservedMinX, PreservedMaxY + 1, PreservedMaxX, UpperVertex));
+	if (CoveredMaxVertexX > CoveredMinVertexX && CoveredMaxVertexY > CoveredMinVertexY)
+	{
+		Strips.Add(FIntRect(CoveredMinVertexX, CoveredMinVertexY, PreservedMinX - 1, CoveredMaxVertexY));
+		Strips.Add(FIntRect(PreservedMaxX + 1, CoveredMinVertexY, CoveredMaxVertexX, CoveredMaxVertexY));
+		Strips.Add(FIntRect(PreservedMinX, CoveredMinVertexY, PreservedMaxX, PreservedMinY - 1));
+		Strips.Add(FIntRect(PreservedMinX, PreservedMaxY + 1, PreservedMaxX, CoveredMaxVertexY));
+	}
 
 	for (const FIntRect& Strip : Strips)
 	{
@@ -584,6 +649,11 @@ FPhase4BTerrainExpansionResult UPhase4BTerrainExpander::ExpandWorldTo4032(UObjec
 		const int32 Y2 = Strip.Max.Y;
 		if (X2 < X1 || Y2 < Y1)
 		{
+			continue;
+		}
+		if (!IsStripCovered(X1, Y1, X2, Y2))
+		{
+			Result.Steps.Add(FString::Printf(TEXT("strip skipped, no components at (%d,%d)-(%d,%d)"), X1, Y1, X2, Y2));
 			continue;
 		}
 		const int32 StripSizeX = X2 - X1 + 1;
@@ -605,6 +675,16 @@ FPhase4BTerrainExpansionResult UPhase4BTerrainExpander::ExpandWorldTo4032(UObjec
 		++Result.StripsWritten;
 		Result.Steps.Add(FString::Printf(TEXT("strip written: vertices (%d,%d)-(%d,%d) = %d x %d"), X1, Y1, X2, Y2,
 		                                 StripSizeX, StripSizeY));
+	}
+
+	// Collision has to follow the new heights, otherwise ray traces (and the player) keep
+	// meeting the old geometry - that is what made the world edge read as a -256 m ditch.
+	for (const TPair<FIntPoint, ULandscapeComponent*>& Entry : Info->XYtoComponentMap)
+	{
+		if (Entry.Value != nullptr)
+		{
+			Entry.Value->UpdateCollisionData();
+		}
 	}
 
 	// ------------------------------------------------------------------ finish the edit
@@ -705,3 +785,132 @@ FPhase4BTerrainExpansionResult UPhase4BTerrainExpander::ExpandWorldTo4032(UObjec
 
 	return Result;
 }
+
+FPhase4BTerrainExpansionResult UPhase4BTerrainExpander::RestorePreservedBlock(UObject* WorldContextObject,
+                                                                             const FString& BackupPath)
+{
+	FPhase4BTerrainExpansionResult Result;
+
+#if WITH_EDITOR
+	using namespace Phase4BTerrainExpansion;
+
+	UWorld* World = GEngine ? GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull) : nullptr;
+	if (World == nullptr)
+	{
+		Result.Message = TEXT("no valid editor world");
+		return Result;
+	}
+
+	ULandscapeInfo* Info = nullptr;
+	TArray<ALandscapeProxy*> Proxies;
+	ALandscape* Landscape = FindLandscape(World, Info, Proxies);
+	if (Landscape == nullptr || Info == nullptr)
+	{
+		Result.Message = TEXT("no ALandscape / ULandscapeInfo in the level");
+		return Result;
+	}
+
+	int32 PreservedMinX = 0;
+	int32 PreservedMinY = 0;
+	int32 PreservedMaxX = 0;
+	int32 PreservedMaxY = 0;
+	if (!LoadPreservedExtent(BackupPath + TEXT(".txt"), PreservedMinX, PreservedMinY, PreservedMaxX, PreservedMaxY))
+	{
+		Result.Message = FString::Printf(TEXT("could not read the heightmap sidecar (%s.txt)"), *BackupPath);
+		return Result;
+	}
+
+	TArray<uint16> PreservedHeights;
+	if (!LoadHeightmapFile(BackupPath, PreservedHeights))
+	{
+		Result.Message = FString::Printf(TEXT("could not read the heightmap backup (%s)"), *BackupPath);
+		return Result;
+	}
+	const int32 PreservedSizeX = PreservedMaxX - PreservedMinX + 1;
+	const int32 PreservedSizeY = PreservedMaxY - PreservedMinY + 1;
+	if (PreservedHeights.Num() != PreservedSizeX * PreservedSizeY)
+	{
+		Result.Message = FString::Printf(TEXT("heightmap backup size mismatch: %d values for a %d x %d block"),
+		                                 PreservedHeights.Num(), PreservedSizeX, PreservedSizeY);
+		return Result;
+	}
+
+	const float ZScale = Landscape->GetActorScale3D().Z;
+	Result.HeightmapZScale = ZScale;
+	Result.HeightmapBackupPath = BackupPath;
+	Result.BackupBytes = PreservedHeights.Num() * static_cast<int32>(sizeof(uint16));
+	Result.OldVertexMin = FIntPoint(PreservedMinX, PreservedMinY);
+	Result.OldVertexMax = FIntPoint(PreservedMaxX, PreservedMaxY);
+
+	// Named probes: the block corners and the four edges (the edges are where the broken
+	// expansion left a raw 0 ring behind).
+	const int32 MidX = (PreservedMinX + PreservedMaxX) / 2;
+	const int32 MidY = (PreservedMinY + PreservedMaxY) / 2;
+	const TArray<TPair<FString, FIntPoint>> Probes = {
+		TPair<FString, FIntPoint>(TEXT("block_min_corner"), FIntPoint(PreservedMinX, PreservedMinY)),
+		TPair<FString, FIntPoint>(TEXT("block_max_corner"), FIntPoint(PreservedMaxX, PreservedMaxY)),
+		TPair<FString, FIntPoint>(TEXT("west_edge"), FIntPoint(PreservedMinX, MidY)),
+		TPair<FString, FIntPoint>(TEXT("east_edge"), FIntPoint(PreservedMaxX, MidY)),
+		TPair<FString, FIntPoint>(TEXT("south_edge"), FIntPoint(MidX, PreservedMinY)),
+		TPair<FString, FIntPoint>(TEXT("north_edge"), FIntPoint(MidX, PreservedMaxY))};
+
+	for (const TPair<FString, FIntPoint>& Probe : Probes)
+	{
+		float HeightM = 0.f;
+		if (SampleHeightM(Info, FVector2D(Probe.Value.X, Probe.Value.Y), ZScale, HeightM))
+		{
+			Result.PreservedBeforeM.Add(Probe.Key, HeightM);
+		}
+	}
+
+	Info->Modify();
+	Landscape->Modify();
+	FLandscapeEditDataInterface WriteEdit(Info);
+	WriteEdit.SetHeightData(PreservedMinX, PreservedMinY, PreservedMaxX, PreservedMaxY, PreservedHeights.GetData(),
+	                        /*InStride = */0, /*InCalcNormals = */true);
+	WriteEdit.Flush();
+
+	for (const TPair<FString, FIntPoint>& Probe : Probes)
+	{
+		float HeightM = 0.f;
+		if (SampleHeightM(Info, FVector2D(Probe.Value.X, Probe.Value.Y), ZScale, HeightM))
+		{
+			Result.PreservedAfterM.Add(Probe.Key, HeightM);
+		}
+	}
+
+	Result.MaxPreservedDeltaM = 0.f;
+	for (const TPair<FString, float>& Pair : Result.PreservedBeforeM)
+	{
+		if (const float* After = Result.PreservedAfterM.Find(Pair.Key))
+		{
+			Result.MaxPreservedDeltaM = FMath::Max(Result.MaxPreservedDeltaM, FMath::Abs(*After - Pair.Value));
+		}
+	}
+
+	// Physics follows the repaired heightfield.
+	for (const TPair<FIntPoint, ULandscapeComponent*>& Entry : Info->XYtoComponentMap)
+	{
+		if (Entry.Value != nullptr)
+		{
+			Entry.Value->UpdateCollisionData();
+		}
+	}
+
+	Result.bSuccess = true;
+	Result.Message = FString::Printf(
+		TEXT("restored %d x %d vertices of the preserved block from the backup (largest probe change %.2f m)"),
+		PreservedSizeX, PreservedSizeY, Result.MaxPreservedDeltaM);
+	Result.Steps.Add(Result.Message);
+	for (const TPair<FString, float>& Pair : Result.PreservedAfterM)
+	{
+		Result.Steps.Add(FString::Printf(TEXT("probe %s: %.2f m before -> %.2f m after"), *Pair.Key,
+		                                 Result.PreservedBeforeM.FindRef(Pair.Key), Pair.Value));
+	}
+#else
+	Result.Message = TEXT("Phase 4B terrain restore is editor only");
+#endif
+
+	return Result;
+}
+

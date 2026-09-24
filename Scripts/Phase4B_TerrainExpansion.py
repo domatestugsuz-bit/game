@@ -28,6 +28,8 @@ FIELDS = ['bSuccess', 'message', 'steps', 'oldVertexMin', 'oldVertexMax', 'oldWo
 
 TRACES = [('home_pad_trace', 750.0, 750.0), ('house_trace', 760.0, 783.0), ('road_start_trace', 750.0, 665.0),
           ('road_mid_trace', 222.0, 215.0), ('old_edge_west', -1000.0, 0.0), ('old_edge_north', 0.0, 1000.0),
+          ('edge_west_repair', -1258.0, 0.0), ('edge_east_repair', 1258.0, 0.0),
+          ('edge_south_repair', 0.0, -1258.0), ('edge_north_repair', 0.0, 1258.0),
           ('outer_south_west', -1900.0, -1900.0), ('outer_north_east', 1900.0, 1900.0),
           ('outer_north', 0.0, 1900.0), ('outer_east', 1900.0, 0.0), ('outer_west', -1900.0, 0.0),
           ('outer_south', 0.0, -1900.0), ('outer_centre_west', -1500.0, 750.0)]
@@ -193,6 +195,20 @@ else:
         unreal.IntPoint(PRESERVED_MAX[0], PRESERVED_MAX[1]), BACKUP))
     log('backup: {0}'.format(report['backup']['message']))
 
+# Repair pass first: the broken expansion attempts wrote height data outside the components
+# they had created, which zeroed the neighbouring heightmap rows (the world edge dropped to
+# raw 0, i.e. -255 m). The backup holds the exact truth for the preserved block, so it is
+# written back before anything else happens.
+restore = getattr(unreal.Phase4BTerrainExpander, 'restore_preserved_block', None)
+if restore is None:
+    fail('Phase4BTerrainExpander.restore_preserved_block is not exposed to Python')
+    report['restore'] = {'message': 'restore helper missing', 'bSuccess': False}
+else:
+    report['restore'] = capture(restore(world, BACKUP))
+    for step in report['restore'].get('steps') or []:
+        log('restore step: {0}'.format(step))
+    log('restore: {0}'.format(report['restore']['message']))
+
 helper = expand_helper()
 if helper is None:
     fail('Phase4BTerrainExpander.expand_world_to_4032 is not exposed to Python')
@@ -234,13 +250,18 @@ def is_number(value):
 outer_values = [value for value in (expand.get('outerSamplesM') or {}).values() if is_number(value)]
 outer_min = min(outer_values) if outer_values else None
 grid = expand.get('newComponentCount')
+edge_names = ('edge_west_repair', 'edge_east_repair', 'edge_south_repair', 'edge_north_repair')
 checks = {
     'backup_written': bool(report['backup'].get('backupBytes')),
+    'restore_success': bool(report.get('restore', {}).get('bSuccess')),
+    'world_edge_not_zeroed': all(is_number(traces.get(name)) and traces[name] > -10.0 for name in edge_names),
     'expand_success': bool(expand.get('bSuccess')),
     'strips_written': (expand.get('stripsWritten') or 0) == 4,
-    'world_is_4032_m': is_number(expand.get('newWorldSizeM'))
-                       and abs(float(expand['newWorldSizeM']) - 4032.0) < 2.0,
-    'component_grid_32x32': isinstance(grid, list) and grid[:2] == [32, 32],
+    # a component is 126 quads * 1.25 m = 157.5 m, so 26 components ~= 4095 m (the closest
+    # square world to the 4032 m target with this landscape's component size)
+    'world_is_about_4032_m': is_number(expand.get('newWorldSizeM'))
+                             and 4000.0 <= float(expand['newWorldSizeM']) <= 4200.0,
+    'component_grid_square': isinstance(grid, list) and len(grid) >= 2 and grid[0] == grid[1] and grid[0] >= 24,
     'preserved_heights_intact': is_number(preserved_delta) and float(preserved_delta) < 0.05,
     'outer_relief_has_relief': is_number(relief.get('spread')) and float(relief['spread']) > 60.0,
     'outer_area_not_flat': (outer_min is not None) and outer_min > 8.0,

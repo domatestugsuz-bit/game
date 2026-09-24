@@ -144,4 +144,14 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "MyProject|Phase4B")
 	static FPhase4BTerrainExpansionResult ExpandWorldTo4032(UObject* WorldContextObject, const FString& BackupPath);
+
+	/**
+	 * Writes the heights recorded in the backup file straight back over the block they came
+	 * from. Used as a repair pass: earlier expansion attempts wrote height data outside the
+	 * components they had created, which zeroed the neighbouring rows of the heightfield and
+	 * left the world edge sitting at raw 0 (a -255 m drop). The restore is exact: the raw
+	 * uint16 grid from the backup is copied back verbatim.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "MyProject|Phase4B")
+	static FPhase4BTerrainExpansionResult RestorePreservedBlock(UObject* WorldContextObject, const FString& BackupPath);
 };

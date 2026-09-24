@@ -65,9 +65,9 @@ void AMyProjectPlayerCharacter::BeginPlay()
 {
 	Super::BeginPlay();
 
-	if (DefaultMappingContext)
+	if (APlayerController* PlayerController = Cast<APlayerController>(GetController()))
 	{
-		if (const APlayerController* PlayerController = Cast<APlayerController>(GetController()))
+		if (DefaultMappingContext)
 		{
 			if (UEnhancedInputLocalPlayerSubsystem* InputSubsystem =
 				ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(PlayerController->GetLocalPlayer()))
@@ -75,6 +75,15 @@ void AMyProjectPlayerCharacter::BeginPlay()
 				InputSubsystem->AddMappingContext(DefaultMappingContext, 0);
 			}
 		}
+
+		// Game only input with a hidden, captured cursor. Looking around is driven by mouse
+		// deltas (a laptop touchpad only produces them while the cursor is captured), and
+		// capture used to depend on the player clicking inside the viewport first, which is
+		// exactly why a touchpad player could walk but never turn.
+		PlayerController->bShowMouseCursor = false;
+		PlayerController->SetInputMode(FInputModeGameOnly());
+		PlayerController->SetIgnoreLookInput(false);
+		PlayerController->SetIgnoreMoveInput(false);
 	}
 }
 
